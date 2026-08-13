@@ -1,0 +1,7 @@
+version: "1.0"
+type: route
+data:
+  url: "/storage/sunburstfs"
+  title: _("Sunburst")
+  editing: false
+  component: omv-storage-sunburstfs-page

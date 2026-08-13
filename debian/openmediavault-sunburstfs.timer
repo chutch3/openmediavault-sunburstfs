@@ -1,0 +1,17 @@
+[Unit]
+Description=Periodically refresh openmediavault-sunburstfs cached charts
+
+[Timer]
+# OnActiveSec anchors the first run to timer activation, not boot --
+# OnUnitActiveSec alone never fires with no prior completed run to
+# anchor from (confirmed: "Trigger: n/a" after install).
+# 1h, widened from 15min: that interval once produced sustained `du`
+# activity that coincided with a memory exhaustion crash.
+OnActiveSec=1h
+OnUnitActiveSec=1h
+Persistent=true
+# Jitter so refreshes don't land at a predictable, identical moment.
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

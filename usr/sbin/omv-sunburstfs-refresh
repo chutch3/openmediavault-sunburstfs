@@ -1,0 +1,143 @@
+#!/usr/bin/env php
+<?php
+declare(strict_types=1);
+
+/**
+ * This file is part of openmediavault-sunburstfs.
+ *
+ * Regenerates ONE filesystem's cached chart per run -- whichever has
+ * gone longest without a fresh one (see StalestFilesystemPicker) --
+ * run on a schedule by the openmediavault-sunburstfs.timer unit.
+ * Deliberately not run synchronously inside getPage(): a large scan
+ * can run long enough to get omv-engined SIGKILLed by its own
+ * watchdog. Deliberately one filesystem per run, not all: refreshing
+ * everything on a fixed timer once coincided with a real memory
+ * exhaustion crash. Guarded by its own flock() so an overlapping run
+ * skips rather than double-scanning the same filesystem.
+ */
+// Matches omv-rpc's own bootstrap (autoloader, globals, functions),
+// not download.php's -- a standalone CLI process calling RPCs.
+require_once("openmediavault/autoloader.inc");
+require_once("openmediavault/globals.inc");
+require_once("openmediavault/functions.inc");
+
+require_once "/usr/share/openmediavault/engined/rpc/sunburstfs/SunburstConfig.php";
+require_once "/usr/share/openmediavault/engined/rpc/sunburstfs/TimeoutBoundedProcess.php";
+require_once "/usr/share/openmediavault/engined/rpc/sunburstfs/DiskUsageScannerInterface.php";
+require_once "/usr/share/openmediavault/engined/rpc/sunburstfs/DuDiskUsageScanner.php";
+require_once "/usr/share/openmediavault/engined/rpc/sunburstfs/SunburstTreeBuilder.php";
+require_once "/usr/share/openmediavault/engined/rpc/sunburstfs/SunburstPageTemplate.php";
+require_once "/usr/share/openmediavault/engined/rpc/sunburstfs/SunburstPageGenerator.php";
+require_once "/usr/share/openmediavault/engined/rpc/sunburstfs/FilesystemDirectoryInterface.php";
+require_once "/usr/share/openmediavault/engined/rpc/sunburstfs/OmvFilesystemDirectory.php";
+require_once "/usr/share/openmediavault/engined/rpc/sunburstfs/StalestFilesystemPicker.php";
+require_once "/usr/share/openmediavault/engined/rpc/sunburstfs/ManagedFilesystemFilter.php";
+
+use Sunburstfs\DuDiskUsageScanner;
+use Sunburstfs\ManagedFilesystemFilter;
+use Sunburstfs\OmvFilesystemDirectory;
+use Sunburstfs\StalestFilesystemPicker;
+use Sunburstfs\SunburstConfig;
+use Sunburstfs\SunburstPageGenerator;
+use Sunburstfs\SunburstPageTemplate;
+use Sunburstfs\SunburstTreeBuilder;
+use Sunburstfs\TimeoutBoundedProcess;
+
+const LOCK_DIR = "/run/lock";
+
+function refreshOne(array $filesystem): void
+{
+    $generator = new SunburstPageGenerator(
+        new DuDiskUsageScanner(new TimeoutBoundedProcess(SunburstConfig::SCAN_TIMEOUT_SECONDS)),
+        new SunburstTreeBuilder(SunburstConfig::TOP_N),
+        new SunburstPageTemplate(),
+        SunburstConfig::MAX_DEPTH,
+        SunburstConfig::TEMPLATE_PATH,
+        SunburstConfig::D3_SOURCE_PATH
+    );
+
+    $tmpPath = $generator->generate($filesystem["mountpoint"]);
+    $finalPath = SunburstConfig::cachePathFor($filesystem["uuid"]);
+    // Atomic replace: readers never see a partially-written file.
+    rename($tmpPath, $finalPath);
+    chmod($finalPath, 0644);
+}
+
+/**
+ * @param array{uuid:string,mountpoint:string}|null $filesystem null
+ *   when there's nothing to refresh (e.g. no filesystems mounted)
+ */
+function main(?array $filesystem): int
+{
+    if ($filesystem === null) {
+        return 0;
+    }
+
+    if (!is_dir(SunburstConfig::CACHE_DIR)) {
+        mkdir(SunburstConfig::CACHE_DIR, 0755, true);
+    }
+
+    $lockPath = LOCK_DIR . "/sunburstfs-{$filesystem['uuid']}.lock";
+    $lockHandle = fopen($lockPath, "c");
+    if ($lockHandle === false) {
+        fwrite(STDERR, "sunburstfs-refresh: could not open lock file for {$filesystem['uuid']}\n");
+        return 1;
+    }
+
+    if (!flock($lockHandle, LOCK_EX | LOCK_NB)) {
+        // Still refreshing from a previous run -- expected, not an error.
+        fclose($lockHandle);
+        return 0;
+    }
+
+    $exitCode = 0;
+    try {
+        refreshOne($filesystem);
+    } catch (\Throwable $e) {
+        fwrite(STDERR, "sunburstfs-refresh: failed for {$filesystem['uuid']}: {$e->getMessage()}\n");
+        $exitCode = 1;
+    } finally {
+        flock($lockHandle, LOCK_UN);
+        fclose($lockHandle);
+    }
+
+    return $exitCode;
+}
+
+// Top-level catch so this script never exits via an uncaught
+// exception (e.g. listMounted() itself failing) -- always a clean
+// exit code and a readable stderr line.
+try {
+    $context = ["username" => "root", "role" => OMV_ROLE_ADMINISTRATOR];
+    $allFilesystems = ManagedFilesystemFilter::excludingRoot(
+        (new OmvFilesystemDirectory($context))->listMounted()
+    );
+
+    // Optional argv[1]: refresh one specific uuid instead of letting
+    // the stalest-first picker choose (useful for testing a filesystem
+    // deliberately rather than only via the unattended timer).
+    $onlyUuid = $argv[1] ?? null;
+    if ($onlyUuid !== null) {
+        $matches = array_values(array_filter(
+            $allFilesystems,
+            static fn (array $fs): bool => $fs["uuid"] === $onlyUuid
+        ));
+        if ($matches === []) {
+            fwrite(STDERR, "sunburstfs-refresh: no mounted filesystem found for uuid '{$onlyUuid}'\n");
+            exit(1);
+        }
+        $target = $matches[0];
+    } else {
+        $picker = new StalestFilesystemPicker(static function (string $uuid): ?int {
+            $mtime = @filemtime(SunburstConfig::cachePathFor($uuid));
+
+            return $mtime === false ? null : $mtime;
+        });
+        $target = $picker->pick($allFilesystems);
+    }
+
+    exit(main($target));
+} catch (\Throwable $e) {
+    fwrite(STDERR, "sunburstfs-refresh: unexpected failure: {$e->getMessage()}\n");
+    exit(1);
+}

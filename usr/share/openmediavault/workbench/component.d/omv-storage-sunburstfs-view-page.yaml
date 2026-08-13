@@ -1,0 +1,29 @@
+version: "1.0"
+type: component
+data:
+  name: omv-storage-sunburstfs-view-page
+  type: formPage
+  config:
+    title: _("Sunburst")
+    fields:
+      - type: hint
+        # formPage has real form fields, so route params are namespaced
+        # under _routeParams (not exposed as bare {{ fsUuid }}) to avoid
+        # colliding with a form field that happened to share the name --
+        # confirmed necessary by testing (first attempt sent fsUuid=""),
+        # unlike textPage's route-param templating, which has no such
+        # collision risk since it has no form fields at all.
+        #
+        # The chart is now a standalone HTML+D3 page (see
+        # SunburstPageGenerator), not an image embedded in this page --
+        # a plain <a href> triggers a real full-page browser navigation
+        # to download.php's response, which is a genuinely separate
+        # document outside Angular's sanitizeHtml/router entirely, so it
+        # can run its own JavaScript (D3) with no OMV-imposed
+        # restriction. target="_blank" keeps this OMV tab where it was.
+        text: '<a href="download.php?service=Sunburstfs&amp;method=getPage&amp;params=%7B%22fsUuid%22:%22{{ _routeParams.fsUuid }}%22%7D" target="_blank" rel="noopener">Open sunburst chart</a>'
+    buttons:
+      - template: back
+        execute:
+          type: url
+          url: "/storage/sunburstfs"

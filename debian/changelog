@@ -1,0 +1,347 @@
+openmediavault-sunburstfs (7.0~phase5-1) stable; urgency=low
+
+  * Fixed: the placeholder ("chart not generated yet") page rendered as
+    raw JSON instead of HTML in the browser, while the real cached chart
+    rendered fine. Root cause: the cache-hit file always ends in .html
+    (renamed by the refresh script), but the placeholder served a bare
+    tempnam() file with no extension at all -- download.php's
+    Content-Type detection turned out to key off the file extension,
+    not only the RPC response's own declared headers. Fixed by giving
+    the placeholder file a real .html extension too.
+  * Test coverage: added the one real gap found on review --
+    SunburstConfig::cachePathFor() (the single source of truth linking
+    what the refresh script writes to what getPage() reads) had zero
+    coverage despite its extension already having silently changed
+    once. Everything else untested is legitimately outer-ring/framework
+    glue (RPC calls, file I/O, CLI entrypoint), consistent with this
+    project's Circle Architecture approach throughout.
+  * Packaging: Section corrected from net to admin (this is a storage
+    utility, not a networking one). The package build now runs the full
+    PHPUnit suite via debian/rules (override_dh_auto_test, respecting
+    DEB_BUILD_OPTIONS=nocheck) and refuses to produce a .deb if any
+    test fails -- Build-Depends gained phpunit accordingly.
+  * Trimmed verbose inline comments across source and packaging files
+    down to the essential why; class/method docblocks kept as-is.
+  * Added README.md (install/uninstall/dev instructions) and
+    Taskfile.yml (test/build/install/clean convenience commands) --
+    debian/rules itself stays a Makefile, since dpkg-buildpackage
+    requires that specifically.
+
+ -- openmediavault-sunburstfs plugin <chutchens91@gmail.com>  Thu, 13 Aug 2026 00:00:00 +0000
+
+openmediavault-sunburstfs (7.0~phase4-1) stable; urgency=low
+
+  * Rendering rewrite, prompted by live feedback on the deployed
+    server-rendered PNG: rings existed but were illegible (no labels,
+    colors only varied by depth so a filesystem dominated by one long
+    single-child folder chain -- a real deployed example -- rendered as
+    a flat "bullseye"), the legend only ever covered 3 root-level
+    entries, and a raster image couldn't scale cleanly across devices.
+    - New approach: the chart is now a standalone HTML page rendered
+      client-side with D3 (vendored, no CDN), served through the same
+      download.php + RPC `filepath` + explicit Content-Type mechanism
+      already proven for the PNG, just with `text/html` instead of
+      `image/png`. This is a genuinely separate document -- not passed
+      through OMV's Angular sanitizeHtml pipe -- so it can run real
+      JavaScript despite OMV7's declarative workbench having no
+      supported extension point for that (confirmed earlier in this
+      project); the view page now links out to it (`<a href>`,
+      target="_blank") instead of embedding an `<img>`.
+    - D3's own well-known "zoomable sunburst" pattern replaces all of
+      SunburstWedgeLayout, HslColor, TextFitter, and SunburstGdRenderer
+      (deleted, along with their tests) -- color-by-branch-family,
+      adaptive label visibility, and click-to-zoom drill-down (deferred
+      early in this project specifically because it seemed to need
+      client JS OMV couldn't run) all come from D3's reference
+      implementation rather than hand-rolled PHP, which is exactly the
+      code that had been buggy across several iterations already (the
+      GD degenerate-arc bug, legend overlap, the bullseye colors).
+    - New SunburstPageTemplate (test-first): the one piece of real
+      logic left, injecting the tree as JSON into the page template.
+      Deliberately escapes with JSON_HEX_TAG|JSON_HEX_AMP, tested
+      directly against a directory name containing "</script>" -- a
+      real, not hypothetical, break-out-of-the-script-block risk once
+      untrusted directory names end up inside a <script> block.
+    - New SunburstPageGenerator replaces SunburstChartGenerator. New
+      outside-in integration test (real scanner + builder + template)
+      exists specifically to catch wiring/field-name mismatches between
+      the pieces -- the same class of bug that once slipped through
+      here as an incomplete branch -> siblingIndex rename.
+    - D3 (v7.9.0, ISC licensed) is vendored as its own untouched file
+      (templates/d3.v7.min.js), spliced into the page template at
+      generation time rather than pre-merged into one file, specifically
+      so debian/copyright can attribute it accurately as a single
+      unambiguous file rather than a mix of GPL-3+ and ISC content in
+      one blob.
+    - debian/control no longer depends on php-gd or fonts-dejavu-core --
+      nothing server-side renders anything any more.
+    - Reviewed live locally before any NAS deployment: a real HTML file
+      generated through the actual production pipeline (real
+      SunburstTreeBuilder + SunburstPageTemplate, real du numbers from
+      the deployed all_data-dominated filesystem) was opened in a
+      browser and confirmed working -- labels, branch colors, hover
+      tooltips, and click-to-zoom all correct -- before packaging this
+      version.
+
+ -- openmediavault-sunburstfs plugin <chutchens91@gmail.com>  Thu, 13 Aug 2026 00:00:00 +0000
+
+openmediavault-sunburstfs (7.0~phase3-9) stable; urgency=low
+
+  * Root cause found (not just mitigated) for the two system crashes:
+    confirmed via `omv-rpc FileSystemMgmt enumerateMountedFilesystems`
+    directly that the OS root filesystem ("/") is a real entry in the
+    mounted-filesystem list on this system (it's a normal managed
+    mountpoint here, not synthesized), it had never been successfully
+    cached, and StalestFilesystemPicker always prioritizes a
+    never-cached filesystem over any real cache age -- so root was
+    picked every single unattended run. `du` walking root (including
+    e.g. Docker's per-layer storage under /var/lib/docker, which can
+    hold a pathologically large *directory count* while using little
+    actual space) produced output large enough that buffering it via
+    exec() exhausted system memory. Confirmed the box's baseline
+    memory usage is normally low -- this wasn't a marginal system
+    tipped over by one contributing factor, our scan was the entire
+    cause.
+    - New ManagedFilesystemFilter (test-first): excludes the root
+      filesystem from every code path (picker, manual argv[1]
+      override) -- root isn't useful for this plugin's purpose anyway
+      (finding what to move off data disks, not charting the OS drive).
+    - New hard cap (test-first, confirmed fails without the fix and
+      passes with it): DuDiskUsageScanner now pipes `du`'s output
+      through `head -n 500000` (SunburstConfig::MAX_DIRECTORY_ENTRIES).
+      `du` prints deepest-first, so the scanned path's own summary
+      line is always last -- truncation therefore always self-detects
+      via SunburstTreeBuilder's existing "root path not present" check,
+      no new detection code needed (confirmed the ordering directly).
+      This bounds memory for *any* filesystem with a pathological
+      directory count, not just this specific one.
+    - Timer manually disabled during investigation
+      (systemctl disable --now); needs to be manually re-enabled once
+      this fix is confirmed stable.
+
+ -- openmediavault-sunburstfs plugin <chutchens91@gmail.com>  Wed, 12 Aug 2026 00:00:00 +0000
+
+openmediavault-sunburstfs (7.0~phase3-8) stable; urgency=low
+
+  * Major reliability response to a real incident: a NAS already
+    running close to its memory ceiling (its own other services --
+    minio, several Docker containers, clamav, kopia) crashed and
+    required a reboot; timing correlated with sustained background
+    `du` activity from refreshing every mounted filesystem on a fixed
+    15min timer regardless of how long any individual scan took.
+    - New StalestFilesystemPicker (test-first): each run now refreshes
+      only the single filesystem whose cached chart has gone longest
+      without a fresh one (or was never generated), not every mounted
+      filesystem. Spreads the same total work out instead of
+      compounding it.
+    - Timer interval widened 15min -> 1h (OnActiveSec/OnUnitActiveSec),
+      RandomizedDelaySec 120 -> 300. Service TimeoutStartSec tightened
+      6h -> 2h30m now that a run is bounded by one filesystem's
+      SCAN_TIMEOUT_SECONDS (2h) plus rendering, not several in
+      sequence.
+
+  * Color scheme: siblings within a branch were only distinguished by
+    depth-based lightness (all shades of one inherited hue), which
+    confirmed by testing (a chart where an entire 11TB disk lived
+    under one top-level folder) makes the actionable detail -- what's
+    actually big -- invisible, since that's usually below depth 0.
+    SunburstWedgeLayout's `branch` (inherited from the depth-0
+    ancestor) replaced with `siblingIndex` (recomputed fresh at every
+    level, own position among own parent's children -- test-first,
+    confirmed the old inheritance behavior fails the new test and the
+    new behavior passes it). Every ring now gets its own hue based on
+    its own position among siblings, not an inherited one.
+    - Found and fixed a real wiring bug from this rename via a new
+      end-to-end test (real SunburstWedgeLayout -> real
+      SunburstGdRenderer, not hand-built wedge arrays): the renderer
+      still read the old `branch` key after the rename, silently
+      collapsing every wedge to the same color (missing array key ->
+      null -> null % N == 0) -- confirmed the hand-built-wedge tests
+      alone couldn't catch this, since they used whichever key name
+      the renderer itself expected rather than what the real producer
+      emits. Confirmed the new end-to-end test fails without the fix
+      and passes with it.
+
+ -- openmediavault-sunburstfs plugin <chutchens91@gmail.com>  Wed, 12 Aug 2026 00:00:00 +0000
+
+openmediavault-sunburstfs (7.0~phase3-7) stable; urgency=low
+
+  * Visual bugs found from the first real rendered chart on live data:
+    - Legend name/size text overlap: truncation was by fixed character
+      count, not measured pixel width, so a long-but-under-the-cap
+      name still visually collided with its own row's size text.
+      Fixed with a new TextFitter (test-first, fake width-measurer)
+      wired to real font metrics in the renderer; each row's available
+      name width is now derived from that row's actual measured size
+      text width, not a guess.
+    - Every wedge silently rendered as the same gray: confirmed by a
+      faithful reproduction of the real draw sequence that GD's
+      imagefilledarc() treats a degenerate (rounded start == rounded
+      end) arc as a full 360° circle, not "nothing" -- a wedge so
+      thin its angle rounds to zero (e.g. a few hundred bytes next to
+      a multi-GB sibling) was overwriting every previously-drawn
+      wedge. New regression test (SunburstGdRendererTest) renders and
+      samples actual output pixels; confirmed it fails without the
+      fix before confirming it passes with it.
+    - Chart looked small inside an oversized default hint/alert-panel
+      container: added a responsive style attribute to the <img> tag
+      (degrades gracefully to previous behavior if sanitizeHtml strips
+      it) and bumped the native render resolution (600->760).
+
+ -- openmediavault-sunburstfs plugin <chutchens91@gmail.com>  Wed, 12 Aug 2026 00:00:00 +0000
+
+openmediavault-sunburstfs (7.0~phase3-6) stable; urgency=low
+
+  * Two bugs found by actually running the refresh script on the real
+    NAS, not discoverable in this sandbox (no OMV framework/systemd
+    available locally):
+    - "RPC service 'FileSystemMgmt' not found": Rpc::call() defaults
+      to MODE_LOCAL, which only works from inside omv-engined itself.
+      OmvFilesystemDirectory is only ever used from the standalone
+      refresh CLI script -- confirmed via OMV's own omv-rpc CLI tool
+      source that MODE_REMOTE must be passed explicitly for a
+      standalone process to reach the real daemon over its socket.
+      Also switched the script's bootstrap from (autoloader, env,
+      functions) to (autoloader, globals, functions), matching
+      omv-rpc's proven pattern instead of download.php's (a different
+      execution context).
+    - Timer showed "Trigger: n/a" after install -- would never have
+      fired on its own. OnUnitActiveSec alone has no anchor until the
+      service has completed at least once; added OnActiveSec (anchors
+      to the timer's own activation) for a real first run ~15min
+      after install.
+
+ -- openmediavault-sunburstfs plugin <chutchens91@gmail.com>  Wed, 12 Aug 2026 00:00:00 +0000
+
+openmediavault-sunburstfs (7.0~phase3-5) stable; urgency=low
+
+  * Fault-tolerance hardening, requested explicitly after an nginx
+    outage during testing (root cause: an unrelated port-443 conflict
+    on the NAS, not this plugin's code -- but our repeated package
+    installs plausibly triggered the nginx restart that surfaced it):
+    - New TimeoutBoundedProcess (test-first, tests/Integration/Sunburst/
+      TimeoutBoundedProcessTest.php proves the kill actually happens
+      via a real `sleep`, not just assumed from the `timeout` docs).
+      DuDiskUsageScanner now depends on it instead of building an
+      unbounded `du` command directly -- a stuck NFS mount or failing
+      drive can no longer hold a filesystem's lock forever.
+    - openmediavault-sunburstfs.service: Nice=19,
+      IOSchedulingClass=best-effort so a background scan never
+      competes with real NAS usage.
+    - openmediavault-sunburstfs.timer: RandomizedDelaySec=120 jitter.
+    - getImage(): the cache-read/placeholder path is now wrapped so an
+      unexpected failure (corrupt cache file, GD hiccup) always still
+      returns a valid placeholder image instead of a raw RPC error.
+      Missing fsUuid still throws directly -- that's a caller error,
+      not a NAS-health concern.
+    - omv-sunburstfs-refresh: top-level try/catch so nothing can crash
+      it uncaught mid-run, on top of the existing per-filesystem
+      isolation.
+
+ -- openmediavault-sunburstfs plugin <chutchens91@gmail.com>  Wed, 12 Aug 2026 00:00:00 +0000
+
+openmediavault-sunburstfs (7.0~phase3-4) stable; urgency=low
+
+  * Major: getImage() ran `du` synchronously inside the RPC request.
+    Confirmed by testing this can take long enough on a large
+    filesystem to hit the nginx proxy timeout (504) AND get
+    omv-engined SIGKILLed by its own service watchdog -- taking down
+    all RPC functionality on the box, not just this chart, and
+    possibly contributing to a full system hang. getImage() is now a
+    pure cache read (instant, no scanning, no timeout risk at all).
+    Actual generation moved to a new background script
+    (usr/sbin/omv-sunburstfs-refresh), run on a systemd timer
+    (openmediavault-sunburstfs.timer, 15min interval, deliberately no
+    OnBootSec so it can't fire immediately on install), with
+    per-filesystem flock locking so a long scan of one large
+    filesystem just holds its lock across however many ticks it
+    takes, never overlapping itself and never blocking other
+    filesystems. Shows a placeholder image until the first background
+    run completes for a given filesystem.
+
+  * Legend + branch-colored chart (was flat 4-color-by-depth):
+    SunburstWedgeLayout now carries a `branch` index per wedge (which
+    top-level entry it descends from); new HslColor (unit tested) and
+    a curated hue palette give each top-level branch a consistent
+    color family across depths; SunburstGdRenderer now also draws the
+    formatted total size centered in the hole and a side legend
+    (colored dot + name + size) built directly from tree['children'],
+    reusing binary_format() for consistency with the rest of the OMV
+    UI. Requires fonts-dejavu-core (added to Depends).
+
+  * Removed FilesystemMountPointResolver: dead code after this
+    redesign -- getImage() no longer resolves a single fsUuid (pure
+    cache read), and the refresh script iterates every mounted
+    filesystem rather than looking one up.
+
+ -- openmediavault-sunburstfs plugin <chutchens91@gmail.com>  Wed, 12 Aug 2026 00:00:00 +0000
+
+openmediavault-sunburstfs (7.0~phase3-3) stable; urgency=low
+
+  * fsUuid resolution threw a database XPath error -- confirmed by
+    testing that a filesystem's own uuid (from
+    FileSystemMgmt.enumerateMountedFilesystems) and the
+    conf.system.filesystem.mountpoint config object's own primary key
+    are different UUID namespaces, not the same value. Extracted the
+    lookup into FilesystemMountPointResolver (pure, unit tested, 3
+    new tests) wrapping a FilesystemDirectoryInterface abstraction
+    (OmvFilesystemDirectory concrete impl calls Rpc::call the same
+    RPC the picker page already uses, matching on uuid to get
+    mountpoint) instead of the wrong config-database assumption.
+
+ -- openmediavault-sunburstfs plugin <chutchens91@gmail.com>  Mon, 11 Aug 2026 00:00:00 +0000
+
+openmediavault-sunburstfs (7.0~phase3-2) stable; urgency=low
+
+  * View page requested getImage with fsUuid="" -- confirmed by testing.
+    Root cause: formPage namespaces route params under _routeParams to
+    avoid colliding with form field names, unlike textPage which has
+    no such collision risk and exposes them bare. Fixed the hint
+    field's <img> src to use {{ _routeParams.fsUuid }}.
+
+ -- openmediavault-sunburstfs plugin <chutchens91@gmail.com>  Mon, 11 Aug 2026 00:00:00 +0000
+
+openmediavault-sunburstfs (7.0~phase3-1) stable; urgency=low
+
+  * Real backend (Phase 2): DiskUsageScannerInterface/DuDiskUsageScanner,
+    SunburstTreeBuilder, SunburstWedgeLayout, SunburstGdRenderer, wired
+    into getImage(fsUuid, maxDepth?). 15 PHPUnit tests (Unit +
+    Integration). Filesystem picker (Phase 3): datatablePage listing
+    mounted filesystems via core's FileSystemMgmt.enumerateMountedFilesystems,
+    "view chart" action navigating to /storage/sunburstfs/view/:fsUuid,
+    which renders the real <img> wired to the route's fsUuid param
+    (previously hardcoded params={} in the Phase 0 placeholder).
+
+ -- openmediavault-sunburstfs plugin <chutchens91@gmail.com>  Mon, 11 Aug 2026 00:00:00 +0000
+
+openmediavault-sunburstfs (7.0~phase0-3) stable; urgency=low
+
+  * The <img> and hint/sanitizeHtml path rendered, but the image
+    itself was corrupt ("contains errors" in-browser). Root cause:
+    inline `content` bytes cross the IPC boundary between omv-engined
+    (where the RPC method runs) and download.php (a separate php-fpm
+    worker) and don't survive intact as raw binary. Switched to
+    `filepath` + explicit chmod 0644, matching core's rrd.inc.
+
+ -- openmediavault-sunburstfs plugin <chutchens91@gmail.com>  Mon, 10 Aug 2026 00:00:00 +0000
+
+openmediavault-sunburstfs (7.0~phase0-2) stable; urgency=low
+
+  * textPage contentFormat:html doesn't exist on OMV7 (OMV8-only field;
+    confirmed by source and by live test -- content rendered as
+    escaped text). Switched to the mechanism OMV7's own RRD graphs
+    use: download.php streams a PHP-generated image, referenced by a
+    plain <img> inside a formPage 'hint' field (sanitizeHtml permits
+    img). RPC method now renders a real GD filled arc instead of
+    returning SVG text.
+
+ -- openmediavault-sunburstfs plugin <chutchens91@gmail.com>  Mon, 10 Aug 2026 00:00:00 +0000
+
+openmediavault-sunburstfs (7.0~phase0-1) stable; urgency=low
+
+  * Phase 0 walking-skeleton spike: navigation entry, placeholder
+    textPage, and one hardcoded RPC method. Used to confirm plugin
+    deployment mechanics on a real OMV7 instance before building
+    real functionality on top.
+
+ -- openmediavault-sunburstfs plugin <chutchens91@gmail.com>  Mon, 10 Aug 2026 00:00:00 +0000

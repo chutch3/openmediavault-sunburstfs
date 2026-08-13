@@ -1,0 +1,16 @@
+# PHPUnit
+.phpunit.result.cache
+.phpunit.cache/
+
+# Debian package build artifacts
+debian/.debhelper/
+debian/debhelper-build-stamp
+debian/files
+debian/*.substvars
+debian/*.debhelper.log
+debian/openmediavault-sunburstfs/
+debian/openmediavault-sunburstfs*.deb
+
+# OS/editor cruft
+.DS_Store
+*.swp

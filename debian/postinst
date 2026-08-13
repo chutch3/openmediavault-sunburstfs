@@ -1,0 +1,36 @@
+#!/bin/sh
+#
+# openmediavault-sunburstfs
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# any later version.
+
+set -e
+
+. /etc/default/openmediavault
+. /usr/share/openmediavault/scripts/helper-functions
+
+case "$1" in
+    configure)
+        dpkg-trigger update-workbench
+
+        # Created here, not just lazily by the refresh script, so it
+        # exists with the right permissions before the timer's first run.
+        mkdir -p /var/cache/openmediavault/sunburstfs
+        chmod 755 /var/cache/openmediavault/sunburstfs
+    ;;
+
+    abort-upgrade|abort-remove|abort-deconfigure)
+    ;;
+
+    *)
+        echo "postinst called with unknown argument '$1'" >&2
+        exit 1
+    ;;
+esac
+
+#DEBHELPER#
+
+exit 0

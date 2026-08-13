@@ -1,0 +1,24 @@
+version: "3"
+
+tasks:
+  test:
+    desc: Run the PHPUnit suite
+    cmds:
+      - phpunit
+
+  build:
+    desc: Build the .deb package (runs tests first via debian/rules)
+    cmds:
+      - dpkg-buildpackage -us -uc -b
+
+  install:
+    desc: Build and install the package locally
+    deps: [build]
+    cmds:
+      - sudo dpkg -i ../openmediavault-sunburstfs_*.deb
+
+  clean:
+    desc: Remove build artifacts
+    cmds:
+      - dh_clean
+      - rm -f ../openmediavault-sunburstfs_*.deb ../openmediavault-sunburstfs_*.buildinfo ../openmediavault-sunburstfs_*.changes

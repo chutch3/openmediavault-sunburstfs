@@ -1,0 +1,247 @@
+<!--
+  Assembled at generation time by SunburstPageGenerator. Two
+  placeholders: the D3-source one below is plain-substituted with the
+  vendored build (templates/d3.v7.min.js, ISC licensed -- see
+  debian/copyright, kept separate so its license stays unambiguous).
+  The data placeholder further down is injected by
+  SunburstPageTemplate::render(), which escapes it carefully since a
+  tree built from real directory names is untrusted input.
+-->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sunburst chart</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: #1b1b1b;
+    color: #e8e8e8;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 16px;
+  }
+  h1 {
+    font-size: 15px;
+    font-weight: 500;
+    color: #cfcfcf;
+    margin: 0 0 12px;
+    text-align: center;
+    word-break: break-all;
+  }
+  #chart-wrap { width: 100%; max-width: 820px; }
+  svg { width: 100%; height: auto; display: block; overflow: visible; }
+  path { stroke: #1b1b1b; stroke-width: 1px; }
+  path[data-clickable="1"] { cursor: pointer; }
+  text { fill: #f2f2f2; pointer-events: none; user-select: none; }
+  #center-total { font-size: 22px; font-weight: 600; }
+  #center-name { font-size: 12px; fill: #a8a8a8; }
+  #controls { margin-top: 10px; }
+  #reset {
+    display: none;
+    padding: 6px 14px;
+    border-radius: 4px;
+    border: 1px solid #444;
+    background: #262626;
+    color: #e8e8e8;
+    cursor: pointer;
+    font-size: 13px;
+  }
+  #reset:hover { background: #2f2f2f; }
+  #legend {
+    margin-top: 18px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 18px;
+    justify-content: center;
+    max-width: 820px;
+  }
+  #legend .entry { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #d5d5d5; }
+  #legend .dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+</style>
+</head>
+<body>
+<h1 id="page-title"></h1>
+<div id="chart-wrap"><svg id="chart" viewBox="0 0 760 760"></svg></div>
+<div id="controls"><button id="reset">&larr; Back to full view</button></div>
+<div id="legend"></div>
+<script>
+__D3_SOURCE__
+</script>
+<script>
+(function () {
+  "use strict";
+
+  var data = __SUNBURST_DATA__;
+  var width = 760;
+  var radius = width / 2;
+
+  document.getElementById("page-title").textContent = data.path || data.name;
+
+  function formatBytes(n) {
+    var units = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
+    var value = Number(n) || 0;
+    var i = 0;
+    while (value >= 1024 && i < units.length - 1) {
+      value /= 1024;
+      i++;
+    }
+    return (i === 0 ? value : value.toFixed(2)) + " " + units[i];
+  }
+
+  var root = d3.hierarchy(data, function (d) { return d.children; });
+  root.each(function (d) { d.value = d.data.size; });
+  root.sort(function (a, b) { return b.value - a.value; });
+
+  d3.partition().size([2 * Math.PI, radius])(root);
+  root.each(function (d) { d.current = d; });
+
+  var branchColor = d3.scaleOrdinal(
+    (root.children || []).map(function (d) { return d.data.name; }),
+    d3.quantize(d3.interpolateRainbow, Math.max(1, (root.children || []).length))
+  );
+
+  function colorFor(d) {
+    if (d.data.type === "other") return "#5a5a5a";
+    if (d.data.type === "file") return "#7d7d90";
+    var node = d;
+    while (node.depth > 1) node = node.parent;
+    return branchColor(node.data.name);
+  }
+
+  var arc = d3.arc()
+    .startAngle(function (d) { return d.x0; })
+    .endAngle(function (d) { return d.x1; })
+    .padAngle(function (d) { return Math.min((d.x1 - d.x0) / 2, 0.003); })
+    .padRadius(radius / 2)
+    .innerRadius(function (d) { return d.y0; })
+    .outerRadius(function (d) { return Math.max(d.y0, d.y1 - 1); });
+
+  function arcVisible(d) { return d.y1 <= radius && d.y0 >= 0 && d.x1 > d.x0; }
+
+  function labelVisible(d) {
+    // Ring thick enough for a text baseline, arc long enough at its
+    // own mid-radius for a short label (pixel units, not normalized).
+    var ringThickness = d.y1 - d.y0;
+    var arcLengthAtMidRadius = (d.x1 - d.x0) * (d.y0 + d.y1) / 2;
+    return d.y1 <= radius && d.y0 >= 0 && ringThickness > 14 && arcLengthAtMidRadius > 28;
+  }
+
+  function labelTransform(d) {
+    var x = (d.x0 + d.x1) / 2 * 180 / Math.PI;
+    var y = (d.y0 + d.y1) / 2;
+    return "rotate(" + (x - 90) + ") translate(" + y + ",0) rotate(" + (x < 180 ? 0 : 180) + ")";
+  }
+
+  var svg = d3.select("#chart");
+  var g = svg.append("g").attr("transform", "translate(" + radius + "," + radius + ")");
+
+  var wedges = root.descendants().filter(function (d) { return d.depth; });
+
+  var path = g.selectAll("path")
+    .data(wedges)
+    .join("path")
+      .attr("fill", colorFor)
+      .attr("fill-opacity", function (d) { return arcVisible(d.current) ? (d.children ? 0.88 : 0.65) : 0; })
+      .attr("d", function (d) { return arc(d.current); })
+      .attr("data-clickable", function (d) { return d.children ? "1" : "0"; });
+
+  path.filter(function (d) { return d.children; }).on("click", clicked);
+
+  path.append("title").text(function (d) {
+    var breadcrumb = d.ancestors().map(function (a) { return a.data.name; }).reverse().join(" / ");
+    return breadcrumb + "\n" + formatBytes(d.value);
+  });
+
+  var label = g.append("g")
+      .attr("pointer-events", "none")
+      .attr("text-anchor", "middle")
+    .selectAll("text")
+    .data(wedges.filter(function (d) { return labelVisible(d.current); }))
+    .join("text")
+      .attr("dy", "0.32em")
+      .attr("font-size", "11px")
+      .attr("fill-opacity", function (d) { return +labelVisible(d.current); })
+      .attr("transform", function (d) { return labelTransform(d.current); })
+      .text(function (d) { return d.data.name; });
+
+  var parentCircle = g.append("circle")
+      .datum(root)
+      .attr("r", radius / 4)
+      .attr("fill", "none")
+      .attr("pointer-events", "all")
+      .on("click", clicked);
+
+  var centerTotal = svg.append("text")
+      .attr("id", "center-total")
+      .attr("text-anchor", "middle")
+      .attr("x", radius)
+      .attr("y", radius - 4);
+
+  var centerName = svg.append("text")
+      .attr("id", "center-name")
+      .attr("text-anchor", "middle")
+      .attr("x", radius)
+      .attr("y", radius + 16);
+
+  function updateCenterLabel(d) {
+    centerTotal.text(formatBytes(d.value));
+    centerName.text(d === root ? "" : d.data.name);
+  }
+  updateCenterLabel(root);
+
+  var resetButton = document.getElementById("reset");
+
+  function clicked(event, p) {
+    resetButton.style.display = p === root ? "none" : "inline-block";
+    parentCircle.datum(p.parent || root);
+    updateCenterLabel(p);
+
+    root.each(function (d) {
+      d.target = {
+        x0: Math.max(0, Math.min(1, (d.x0 - p.x0) / (p.x1 - p.x0))) * 2 * Math.PI,
+        x1: Math.max(0, Math.min(1, (d.x1 - p.x0) / (p.x1 - p.x0))) * 2 * Math.PI,
+        y0: Math.max(0, d.y0 - p.depth),
+        y1: Math.max(0, d.y1 - p.depth)
+      };
+    });
+
+    var t = g.transition().duration(500);
+
+    path.transition(t)
+        .tween("data", function (d) {
+          var i = d3.interpolate(d.current, d.target);
+          return function (time) { d.current = i(time); };
+        })
+        .attr("fill-opacity", function (d) { return arcVisible(d.target) ? (d.children ? 0.88 : 0.65) : 0; })
+        .attrTween("d", function (d) { return function () { return arc(d.current); }; });
+
+    label.transition(t)
+        .attr("fill-opacity", function (d) { return +labelVisible(d.target); })
+        .attrTween("transform", function (d) { return function () { return labelTransform(d.current); }; });
+  }
+
+  resetButton.addEventListener("click", function () { clicked(null, root); });
+
+  var legend = document.getElementById("legend");
+  (root.children || []).forEach(function (d) {
+    var entry = document.createElement("div");
+    entry.className = "entry";
+    var dot = document.createElement("span");
+    dot.className = "dot";
+    dot.style.background = colorFor(d);
+    var legendLabel = document.createElement("span");
+    legendLabel.textContent = d.data.name + " — " + formatBytes(d.value);
+    entry.appendChild(dot);
+    entry.appendChild(legendLabel);
+    legend.appendChild(entry);
+  });
+})();
+</script>
+</body>
+</html>

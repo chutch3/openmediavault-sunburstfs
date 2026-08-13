@@ -1,0 +1,45 @@
+version: "1.0"
+type: component
+data:
+  name: omv-storage-sunburstfs-page
+  type: datatablePage
+  config:
+    title: _("Sunburst")
+    hasSearchField: false
+    selectionType: single
+    columns:
+      - name: _("Name")
+        prop: description
+        flexGrow: 2
+      - name: _("Device")
+        prop: devicefile
+        flexGrow: 2
+      - name: _("Type")
+        prop: type
+        flexGrow: 1
+      - name: _("Mount Point")
+        prop: mountpoint
+        flexGrow: 2
+      - name: _("Size")
+        prop: size
+        flexGrow: 1
+        cellTemplateName: binaryUnit
+      - name: _("Used")
+        prop: percentage
+        flexGrow: 1
+        cellTemplateName: progressBar
+    store:
+      proxy:
+        service: FileSystemMgmt
+        get:
+          method: enumerateMountedFilesystems
+    actions:
+      - type: iconButton
+        icon: "mdi:chart-donut"
+        tooltip: _("View sunburst chart")
+        enabledConstraints:
+          minSelected: 1
+          maxSelected: 1
+        execute:
+          type: url
+          url: "/storage/sunburstfs/view/{{ uuid }}"

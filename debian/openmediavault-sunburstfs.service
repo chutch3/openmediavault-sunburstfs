@@ -1,0 +1,15 @@
+[Unit]
+Description=Refresh openmediavault-sunburstfs cached charts
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/omv-sunburstfs-refresh
+# Safety net so a truly stuck run can't wedge the service forever;
+# bounded by SCAN_TIMEOUT_SECONDS (2h) plus rendering overhead.
+TimeoutStartSec=2h30m
+# Background work nobody's waiting on -- must never compete with real
+# NAS usage. Inherited by the `du` child process, no PHP-side wrapping
+# needed.
+Nice=19
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

@@ -1,0 +1,15 @@
+Source: openmediavault-sunburstfs
+Section: admin
+Priority: optional
+Maintainer: openmediavault-sunburstfs plugin <chutchens91@gmail.com>
+Build-Depends: debhelper-compat (= 13), phpunit
+Standards-Version: 4.6.2
+Homepage: https://github.com/chutch3/openmediavault-sunburstfs
+
+Package: openmediavault-sunburstfs
+Architecture: all
+Depends: ${misc:Depends}, openmediavault (>= 7.0)
+Description: Sunburst disk-usage chart for each file system
+ Adds a page under Storage that renders a sunburst chart (rings
+ for directory depth, arc size for bytes used) for a selected
+ file system.
